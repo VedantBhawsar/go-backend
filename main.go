@@ -3,11 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/gorilla/mux"
-	"github.com/sirupsen/logrus"
 	"net/http"
-	"time"
 	"user-crud/controllers"
+	"user-crud/db"
+	"user-crud/middlewares"
+
+	"github.com/gorilla/mux"
+	_ "github.com/lib/pq"
+	"github.com/sirupsen/logrus"
 )
 
 var logger = logrus.New()
@@ -18,7 +21,8 @@ func main() {
 	logger.SetLevel(logrus.InfoLevel)
 
 	router := mux.NewRouter()
-	router.Use(loggingMiddleware)
+	router.Use(middlewares.LoggingMiddleware)
+	db.ConnectDb("postgres://postgres:password@localhost:5432/postgres?sslmode=disable")
 
 	router.HandleFunc("/users", controllers.GetUsers).Methods("GET")
 	router.HandleFunc("/create", controllers.CreateUser).Methods("POST")
@@ -32,16 +36,4 @@ func main() {
 	fmt.Println("Server started on port 8080")
 	logger.Info("Starting server on :8080")
 	http.ListenAndServe(":8080", router)
-}
-
-func loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		logrus.WithFields(logrus.Fields{
-			"method": r.Method,
-			"url":    r.URL.Path,
-			"time":   time.Since(start),
-		}).Info("handled request")
-	})
 }

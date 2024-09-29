@@ -2,11 +2,13 @@ package controllers
 
 import (
 	"encoding/json"
-	"fmt"
-	"github.com/gorilla/mux"
-	"io/ioutil"
 	"net/http"
 	"strconv"
+	"sync"
+
+	"user-crud/db"
+
+	"github.com/gorilla/mux"
 )
 
 type User struct {
@@ -16,107 +18,125 @@ type User struct {
 	Email string `json:"email"`
 }
 
-var users []User
+var (
+	users []User
+	mutex sync.Mutex
+)
 
 func GetUsers(w http.ResponseWriter, r *http.Request) {
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	if db.Db == nil {
+		http.Error(w, "Database connection is not established", http.StatusInternalServerError)
+		return
+	}
+
+	rows, err := db.Db.Query("SELECT * FROM users")
+	if err != nil {
+		http.Error(w, "Failed to fetch users", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var users []User
+	for rows.Next() {
+		var user User
+		if err := rows.Scan(&user.Id, &user.Name, &user.Email); err != nil {
+			http.Error(w, "Failed to parse users", http.StatusInternalServerError)
+			return
+		}
+		users = append(users, user)
+	}
 	json.NewEncoder(w).Encode(users)
 }
 
 func CreateUser(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("createUser")
-	body, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "Unable to read body", http.StatusBadRequest)
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	if db.Db == nil {
+		http.Error(w, "Database connection is not established", http.StatusInternalServerError)
 		return
 	}
 
 	var user User
-	var userLength int = len(users)
-	user.Id = userLength + 1
-	err = json.Unmarshal(body, &user)
-	if err != nil {
-		http.Error(w, "Unable to unmarshal body", http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+		http.Error(w, "Invalid input", http.StatusBadRequest)
 		return
 	}
+	user.Id = len(users) + 1
 	users = append(users, user)
 
-	json.NewEncoder(w).Encode(users)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(user)
 }
 
 func GetUser(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	id := vars["id"]
+	mutex.Lock()
+	defer mutex.Unlock()
 
-	fmt.Println(id)
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		http.Error(w, "Invalid user ID", http.StatusBadRequest)
+		return
+	}
+
 	for _, user := range users {
-		if userId, err := strconv.Atoi(id); err == nil && user.Id == userId {
+		if user.Id == id {
+			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(user)
 			return
 		}
 	}
-	json.NewEncoder(w).Encode("User not found")
+	http.Error(w, "User not found", http.StatusNotFound)
 }
 
 func UpdateUser(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("updateUser")
-	vars := mux.Vars(r)
-	id := vars["id"]
+	mutex.Lock()
+	defer mutex.Unlock()
 
-	body, err := ioutil.ReadAll(r.Body)
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
 	if err != nil {
-		http.Error(w, "Unable to read body", http.StatusBadRequest)
+		http.Error(w, "Invalid user ID", http.StatusBadRequest)
 		return
 	}
 
-	// Temporary struct with unexported fields
-	type Temp struct {
-		Name  *string `json:"name"`
-		Age   *int    `json:"age"`
-		Email *string `json:"email"`
-	}
-
-	var user1 Temp
-	fmt.Printf("Request Body: %s\n", string(body))
-	err = json.Unmarshal(body, &user1)
-	if err != nil {
-		http.Error(w, "Unable to unmarshal body", http.StatusBadRequest)
+	var updatedUser User
+	if err := json.NewDecoder(r.Body).Decode(&updatedUser); err != nil {
+		http.Error(w, "Invalid input", http.StatusBadRequest)
 		return
 	}
 
 	for index, user := range users {
-		if userId, err := strconv.Atoi(id); err == nil && user.Id == userId {
-			if user1.Email != nil {
-				users[index].Email = *user1.Email
-			}
-			if user1.Age != nil {
-				users[index].Age = *user1.Age
-			}
-			if user1.Name != nil {
-				users[index].Name = *user1.Name
-			}
+		if user.Id == id {
+			users[index] = updatedUser
+			users[index].Id = id // Ensure the ID stays the same
+			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(users[index])
 			return
 		}
 	}
-
-	json.NewEncoder(w).Encode("User not found")
+	http.Error(w, "User not found", http.StatusNotFound)
 }
 
 func DeleteUser(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("deleteUser")
-	vars := mux.Vars(r)
-	id := vars["id"]
-	var error = true
-	for index, user := range users {
-		if userId, err := strconv.Atoi(id); err == nil && user.Id == userId {
-			users = append(users[:index], users[index+1:]...)
-			error = false
-		}
-	}
-	if error {
-		json.NewEncoder(w).Encode("User not found")
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		http.Error(w, "Invalid user ID", http.StatusBadRequest)
 		return
 	}
-	json.NewEncoder(w).Encode(users)
-	return
+
+	for index, user := range users {
+		if user.Id == id {
+			users = append(users[:index], users[index+1:]...)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(users)
+			return
+		}
+	}
+	http.Error(w, "User not found", http.StatusNotFound)
 }
